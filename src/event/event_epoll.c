@@ -142,15 +142,37 @@ _dispatch_muxnote_signal_block_and_raise(int signo)
 	pthread_kill(manager_thread, signo);
 }
 
-static dispatch_muxnote_t
-_dispatch_muxnote_create(dispatch_unote_t du, uint32_t events)
+static void
+_dispatch_muxnote_signal_install(int signo)
 {
 	static sigset_t signals_with_unotes;
 	static struct sigaction sa = {
 		.sa_handler = _dispatch_muxnote_signal_block_and_raise,
 		.sa_flags = SA_RESTART,
 	};
+	struct sigaction old;
 
+	// The first source for a signal installs the handler unconditionally.
+	// Later registrations reinstall it only if the disposition has been
+	// reset to SIG_IGN (the documented pattern before creating a signal
+	// source) or SIG_DFL since: the kernel then discards or acts on the
+	// signal before the signalfd can see it, while kqueue's EVFILT_SIGNAL
+	// fires regardless. A handler the program installed itself is kept.
+	if (sigismember(&signals_with_unotes, signo)) {
+		if (sigaction(signo, NULL, &old) != 0 ||
+				(old.sa_flags & SA_SIGINFO) ||
+				(old.sa_handler != SIG_IGN && old.sa_handler != SIG_DFL)) {
+			return;
+		}
+	}
+	manager_thread = pthread_self();
+	sigaddset(&signals_with_unotes, signo);
+	sigaction(signo, &sa, NULL);
+}
+
+static dispatch_muxnote_t
+_dispatch_muxnote_create(dispatch_unote_t du, uint32_t events)
+{
 	dispatch_muxnote_t dmn;
 	struct stat sb;
 	int fd = (int)du._du->du_ident;
@@ -161,11 +183,6 @@ _dispatch_muxnote_create(dispatch_unote_t du, uint32_t events)
 	switch (filter) {
 	case EVFILT_SIGNAL: {
 		int signo = (int)du._du->du_ident;
-		if (!sigismember(&signals_with_unotes, signo)) {
-			manager_thread = pthread_self();
-			sigaddset(&signals_with_unotes, signo);
-			sigaction(signo, &sa, NULL);
-		}
 		sigemptyset(&sigmask);
 		sigaddset(&sigmask, signo);
 		fd = signalfd(-1, &sigmask, SFD_NONBLOCK | SFD_CLOEXEC);
@@ -263,6 +280,12 @@ _dispatch_unote_register_muxed(dispatch_unote_t du)
 	uint32_t events;
 
 	events = _dispatch_unote_required_events(du);
+
+	if (du._du->du_filter == EVFILT_SIGNAL) {
+		// also when the muxnote already exists: the disposition may have
+		// been reset since the first source for this signal registered
+		_dispatch_muxnote_signal_install((int)du._du->du_ident);
+	}
 
 	dmb = _dispatch_unote_muxnote_bucket(du);
 	dmn = _dispatch_unote_muxnote_find(dmb, du);

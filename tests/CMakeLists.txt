@@ -167,10 +167,12 @@ if(UNIX AND (HAVE_PTHREAD_SETNAME_NP OR HAVE_PTHREAD_SET_NAME_NP) AND (HAVE_PTHR
   list(APPEND DISPATCH_C_TESTS
        thread_name)
 endif()
-# EPOLLHUP handling (SR-9033); kevent platforms get this via EV_EOF
+# EPOLLHUP handling (SR-9033) and signal sources for signals reset to
+# SIG_IGN; kevent platforms get these via EV_EOF and EVFILT_SIGNAL
 if(LINUX)
   list(APPEND DISPATCH_C_TESTS
-       read_hup)
+       read_hup
+       signal_ign)
 endif()
 if(APPLE)
   list(APPEND DISPATCH_C_TESTS
